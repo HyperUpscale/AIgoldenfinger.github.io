@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic AI gen Table ver. 0.3</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0.5; }
+            to { opacity: 1; }
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        .glassmorphism {
+            background: rgba(255, 255, 255, 0.25);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            backdrop-filter: blur(4px); */
+            -webkit-backdrop-filter: blur(4px);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+        .neon-button {
+            box-shadow: 0 0 5px #fff;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-r from-blue-700 to-green-700 min-h-screen p-8">
+
+<div class="max-w-6xl mx-auto glassmorphism p-8">
+    <h1 class="text-4xl font-bold mb-6 text-white text-center">Dynamic AI gen Table ver. 0.3</h1>
+    
+    <div class="mb-6">
+        <label for="initialPrompt" class="block text-white mb-2">Initial Table Prompt:</label>
+        <input id="initialPrompt" type="text" placeholder="Describe the table you want to create..." class="w-full p-2 rounded">
+        <button id="generateInitialTableBtn" class="mt-2 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 transition duration-300 neon-button">Generate Initial Table</button>
+    </div>
+
+    <div class="mb-6">
+        <label for="modelSelect" class="block text-white mb-2">Select Ollama Model:</label>
+        <select id="modelSelect" class="w-full p-2 rounded"></select>
+    </div>
+
+    <div id="tableContainer" class="overflow-x-auto mb-6">
+        <!-- Table will be inserted here -->
+    </div>
+
+    <div class="mb-6">
+        <label for="refillPrompt" class="block text-white mb-2">Refill Prompt:</label>
+        <input id="refillPrompt" type="text" placeholder="Enter a new prompt for refilling..." class="w-full p-2 rounded">
+    </div>
+
+    <div class="mb-6">
+        <button id="addRowWithContentBtn" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-500 transition duration-100 neon-button mr-2">Add Row with Content</button>
+        <button id="fillEmptyColumnBtn" class="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-500 transition duration-100 neon-button mr-2">Fill Empty Column</button>
+    </div>
+
+    <div class="flex flex-wrap gap-2">
+        <button id="addRowBtn" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 transition duration-300 neon-button">Add Empty Row</button>
+        <button id="addColumnBtn" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 transition duration-300 neon-button">Add New Column</button>
+        <button id="saveTableBtn" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 transition duration-300 neon-button">Save Table</button>
+        <button id="loadTableBtn" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 transition duration-300 neon-button">Load Table</button>
+        <button id="pasteDataBtn" class="bg-purple-500 text-white px-4 py-2 rounded hover:bg-purple-600 transition duration-300 neon-button">Paste Data</button>
+    </div>
+</div>
+
+
+    <script>
+    // Global variables
+let sortDirections = {};
+let previousPrompt = '';
+let selectedCells = new Set();
+
+// Utility functions
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => document.querySelectorAll(selector);
+
+async function fetchModels() {
+    try {
+        const response = await fetch('https://active-actual-dog.ngrok-free.app/api/tags');
+        const data = await response.json();
+        const models = data.models.map(model => model.name);
+        populateModelDropdown(models);
+    } catch (error) {
+        console.error('Error fetching models:', error);
+        alert('Error fetching models. Make sure Ollama is running and accessible.');
+    }
+}
+
+function populateModelDropdown(models) {
+    const modelSelect = $('#modelSelect');
+    modelSelect.innerHTML = models.map(model => `<option value="${model}">${model}</option>`).join('');
+}
+
+async function callOllamaLLM(prompt) {
+    const model = $('#modelSelect').value;
+    try {
+        const response = await fetch('https://active-actual-dog.ngrok-free.app/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, prompt })
+        });
+
+        let fullResponse = '';
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+                if (line.trim() !== '') {
+                    try {
+                        const parsedLine = JSON.parse(line);
+                        if (parsedLine.response) {
+                            fullResponse += parsedLine.response;
+                        }
+                    } catch (e) {
+                        console.error('Error parsing JSON:', e);
+                    }
+                }
+            }
+        }
+
+        return fullResponse.trim();
+    } catch (error) {
+        console.error('Error calling Ollama:', error);
+        throw new Error('Unable to generate content');
+    }
+}
+
+async function generateInitialTable() {
+    const prompt = $('#initialPrompt').value;
+    if (!prompt) {
+        alert('Please enter a prompt to generate the initial table.');
+        return;
+    }
+
+    previousPrompt = prompt;
+    const tableStructure = await callOllamaLLM(`Generate a table structure with headers and a few rows of sample data based on this prompt: "${prompt}". Format the response as a markdown table.`);
+    generateTable(tableStructure);
+}
+
+function generateTable(input) {
+    const lines = input.split('\n').filter(line => line.includes('|')).map(line => line.trim());
+    const headers = lines[0].split('|').filter(header => header.trim() !== '');
+    
+    let tableHTML = `
+        <table id="myTable" class="w-full border-collapse border border-gray-300 glassmorphism">
+            <thead>
+                <tr>
+                    <th></th> <!-- Empty corner cell for remove buttons -->
+                    ${headers.map((header, index) => `
+    <th class="border border-gray-300 p-2 bg-gray-100 cursor-pointer hover:bg-gray-200 transition duration-300 relative" 
+        data-index="${index}">
+        <span contenteditable="true" onclick="event.stopPropagation()">${header.trim()}</span>
+        <button class="sort-btn ml-2" onclick="sortTable(${index})"> ↑ ↓ </button>
+        <button class="remove-col-btn absolute top-0 right-0 bg-red-500 text-white px-1 rounded hidden" onclick="removeColumn(${index})">x</button>
+    </th>
+`).join('')}
+                </tr>
+            </thead>
+            <tbody>
+                ${lines.slice(2).map((line, rowIndex) => `
+                    <tr class="fade-in" data-index="${rowIndex}">
+                        <td>
+                            <button class="remove-row-btn bg-red-500 text-white px-1 rounded hidden" onclick="removeRow(${rowIndex})">x</button>
+                        </td>
+                        ${line.split('|').filter(cell => cell.trim() !== '').map(cell => `
+                            <td class="border border-gray-300 p-2" 
+                                contenteditable="true" 
+                                onclick="toggleSelection(this)">${cell.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')}</td>
+                        `).join('')}
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+
+    $('#tableContainer').innerHTML = tableHTML;
+    sortDirections = Object.fromEntries(headers.map((_, index) => [index, true]));
+    
+    // Add event listeners for showing/hiding remove buttons
+    const table = $('#myTable');
+    table.addEventListener('mouseover', showRemoveButtons);
+    table.addEventListener('mouseout', hideRemoveButtons);
+}
+
+function showRemoveButtons(event) {
+    const cell = event.target.closest('th, td');
+    if (!cell) return;
+    
+    const row = cell.parentElement;
+    const table = row.parentElement.parentElement;
+    const rowIndex = Array.from(table.rows).indexOf(row);
+    const colIndex = cell.cellIndex;
+
+    if (rowIndex === 0) {
+        // Show column remove button
+        const removeBtn = row.cells[colIndex].querySelector('.remove-col-btn');
+        if (removeBtn) removeBtn.classList.remove('hidden');
+    } else if (colIndex === 0) {
+        // Show row remove button
+        const removeBtn = row.cells[0].querySelector('.remove-row-btn');
+        if (removeBtn) removeBtn.classList.remove('hidden');
+    }
+}
+
+function hideRemoveButtons() {
+    $$('.remove-col-btn, .remove-row-btn').forEach(btn => btn.classList.add('hidden'));
+}
+
+function removeColumn(index) {
+    const table = $('#myTable');
+    Array.from(table.rows).forEach(row => row.deleteCell(index + 1)); // +1 because of the remove button column
+    updateTableIndices();
+}
+
+function removeRow(index) {
+    const table = $('#myTable');
+    table.deleteRow(index + 1); // +1 because of the header row
+    updateTableIndices();
+}
+
+
+
+function updateTableIndices() {
+    const table = $('#myTable');
+    // Update column indices
+    Array.from(table.rows[0].cells).forEach((cell, index) => {
+        if (index > 0) { // Skip the first cell (empty corner)
+            cell.setAttribute('data-index', index - 1);
+            const removeBtn = cell.querySelector('.remove-col-btn');
+            if (removeBtn) {
+                removeBtn.onclick = () => removeColumn(index - 1);
+            }
+        }
+    });
+    // Update row indices
+    Array.from(table.rows).forEach((row, index) => {
+        if (index > 0) { // Skip the header row
+            row.setAttribute('data-index', index - 1);
+            const removeBtn = row.cells[0].querySelector('.remove-row-btn');
+            if (removeBtn) {
+                removeBtn.onclick = () => removeRow(index - 1);
+            }
+        }
+    });
+}
+
+function toggleSelection(cell) {
+    if (cell.classList.contains('selected')) {
+        cell.classList.remove('selected');
+        selectedCells.delete(cell);
+    } else {
+        cell.classList.add('selected');
+        selectedCells.add(cell);
+    }
+}
+
+function getCurrentTableContent() {
+    const table = $('#myTable');
+    let markdown = '| ' + Array.from(table.rows[0].cells).slice(1).map(cell => cell.textContent.trim()).join(' | ') + ' |\n';
+    markdown += '| ' + Array.from(table.rows[0].cells).slice(1).map(() => '---').join(' | ') + ' |\n';
+    
+    for (let i = 1; i < table.rows.length; i++) {
+        markdown += '| ' + Array.from(table.rows[i].cells).slice(1).map(cell => cell.textContent.trim()).join(' | ') + ' |\n';
+    }
+    
+    return markdown;
+}
+
+async function addRowWithContent() {
+    const table = $('#myTable');
+    const headers = Array.from(table.rows[0].cells).slice(1).map(cell => cell.querySelector('span').textContent.trim());
+    const tableContent = getCurrentTableContent();
+    const prompt = $('#initialPrompt').value;
+
+    const requestPrompt = `
+        Given the following table:
+        ${tableContent}
+
+        Based on the context: "${prompt}", please add ONE MORE ROW to this table.
+        Provide only the content for the new row, maintaining consistency with the existing data.
+        Format your response as a JSON array with the new row's data.
+        For example: ["Content for column 1", "Content for column 2", "Content for column 3"]
+    `;
+
+    try {
+        const response = await callOllamaLLM(requestPrompt);
+        const newRowData = JSON.parse(response);
+
+        if (Array.isArray(newRowData) && newRowData.length === headers.length) {
+            const newRow = table.insertRow(-1);
+            newRow.insertCell(0).innerHTML = `<button class="remove-row-btn bg-red-500 text-white px-1 rounded hidden" onclick="removeRow(${table.rows.length - 2})">x</button>`;
+            
+            newRowData.forEach((cellContent, index) => {
+                const cell = newRow.insertCell(-1);
+                cell.textContent = cellContent;
+                cell.contentEditable = true;
+                cell.addEventListener('click', () => toggleSelection(cell));
+                cell.classList.add('border', 'border-gray-300', 'p-2', 'fade-in');
+            });
+
+            updateTableIndices();
+        } else {
+            throw new Error('Invalid response format');
+        }
+    } catch (error) {
+        console.error('Error adding row with content:', error);
+        alert('An error occurred while adding a new row. Please try again.');
+    }
+}
+
+async function fillEmptyColumn() {
+    const table = $('#myTable');
+    const headers = Array.from(table.rows[0].cells).slice(1).map(cell => cell.querySelector('span').textContent.trim());
+    const tableContent = getCurrentTableContent();
+    const prompt = $('#initialPrompt').value;
+
+    // Find the first empty column
+    let emptyColumnIndex = -1;
+    for (let i = 1; i < table.rows[0].cells.length; i++) {
+        if (Array.from(table.rows).slice(1).every(row => row.cells[i].textContent.trim() === '')) {
+            emptyColumnIndex = i;
+            break;
+        }
+    }
+
+    if (emptyColumnIndex === -1) {
+        alert('No empty column found to fill.');
+        return;
+    }
+
+    const requestPrompt = `
+        
+
+        Based on the context: "${prompt}", please fill the empty column with header "${headers[emptyColumnIndex - 1]}".
+        Provide only the content for this column, maintaining consistency with the existing data.
+        Format your response as a JSON array with the new column's data (excluding the header).
+
+        We have this table so far:
+        ${tableContent}
+        WE NEED TO FILL for the column WITH the appropriate CONTENT. For example: ["New text 1", "New text row 2", "New text row 3"]
+    `;
+
+    try {
+        const response = await callOllamaLLM(requestPrompt);
+        const newColumnData = JSON.parse(response);
+
+        if (Array.isArray(newColumnData) && newColumnData.length === table.rows.length - 1) {
+            newColumnData.forEach((cellContent, index) => {
+                const cell = table.rows[index + 1].cells[emptyColumnIndex];
+                cell.textContent = cellContent;
+                cell.classList.add('fade-in');
+            });
+        } else {
+            throw new Error('Invalid response format');
+        }
+    } catch (error) {
+        console.error('Error filling empty column:', error);
+        alert('An error occurred while filling the empty column. Please try again.');
+    }
+}
+
+function sortTable(columnIndex) {
+    const table = $('#myTable');
+    const tbody = table.tBodies[0];
+    const rows = Array.from(tbody.rows);
+    const isAscending = sortDirections[columnIndex];
+
+    rows.sort((a, b) => {
+        const aValue = a.cells[columnIndex + 1].textContent.trim(); // +1 because of the remove button column
+        const bValue = b.cells[columnIndex + 1].textContent.trim();
+        return isAscending ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
+    });
+
+    rows.forEach(row => tbody.appendChild(row));
+    sortDirections[columnIndex] = !isAscending;
+    updateTableIndices();
+}
+
+function saveTable() {
+    const table = $('#myTable');
+    const data = {
+        headers: Array.from(table.tHead.rows[0].cells).map(cell => cell.textContent),
+        rows: Array.from(table.tBodies[0].rows).map(row => 
+            Array.from(row.cells).map(cell => cell.textContent)
+        ),
+        previousPrompt: previousPrompt
+    };
+    localStorage.setItem('tableData', JSON.stringify(data));
+    alert('Table saved successfully!');
+}
+
+function loadTable() {
+    const savedData = localStorage.getItem('tableData');
+    if (savedData) {
+        const data = JSON.parse(savedData);
+        generateTable(
+            [data.headers.join(' | '), 
+             '-'.repeat(data.headers.length * 3 - 1), 
+             ...data.rows.map(row => row.join(' | '))
+            ].join('\n')
+        );
+        previousPrompt = data.previousPrompt;
+        alert('Table loaded successfully!');
+    } else {
+        alert('No saved table found.');
+    }
+}
+
+async function pasteData() {
+    try {
+        const text = await navigator.clipboard.readText();
+        generateTable(text);
+    } catch (err) {
+        console.error('Failed to read clipboard contents: ', err);
+        alert('Failed to paste data. Please make sure you have copied a valid table structure.');
+    }
+}
+
+function addRow() {
+    const table = $('#myTable');
+    const newRow = table.insertRow(-1);
+    const cellCount = table.rows[0].cells.length;
+    
+    for (let i = 0; i < cellCount; i++) {
+        const cell = newRow.insertCell(i);
+        if (i === 0) {
+            cell.innerHTML = `<button class="remove-row-btn bg-red-500 text-white px-1 rounded hidden" onclick="removeRow(${table.rows.length - 2})">x</button>`;
+        } else {
+            cell.contentEditable = true;
+            cell.addEventListener('click', () => toggleSelection(cell));
+        }
+    }
+    updateTableIndices();
+}
+
+function addColumn() {
+    const table = $('#myTable');
+    const headerRow = table.rows[0];
+    const newHeaderCell = headerRow.insertCell(-1);
+    const columnIndex = headerRow.cells.length - 2; // -2 because of the new cell and the remove button column
+    
+    newHeaderCell.innerHTML = `
+        <span contenteditable="true" onclick="event.stopPropagation()"><strong>New Column</strong></span>
+        <button class="sort-btn ml-2" onclick="sortTable(${columnIndex})">↕️</button>
+        <button class="remove-col-btn absolute top-0 right-0 bg-red-500 text-white px-1 rounded hidden" onclick="removeColumn(${columnIndex})">x</button>
+    `;
+    newHeaderCell.classList.add('border', 'border-gray-300', 'p-2', 'bg-gray-100', 'cursor-pointer', 'hover:bg-gray-200', 'transition', 'duration-300', 'relative');
+    newHeaderCell.setAttribute('data-index', columnIndex);
+
+    for (let i = 1; i < table.rows.length; i++) {
+        const cell = table.rows[i].insertCell(-1);
+        cell.contentEditable = true;
+        cell.addEventListener('click', () => toggleSelection(cell));
+        cell.classList.add('border', 'border-gray-300', 'p-2');
+    }
+    updateTableIndices();
+}
+
+// Initialize
+fetchModels();
+
+// Event listeners
+$('#generateInitialTableBtn').addEventListener('click', generateInitialTable);
+$('#addRowBtn').addEventListener('click', addRow);
+$('#addColumnBtn').addEventListener('click', addColumn);
+$('#saveTableBtn').addEventListener('click', saveTable);
+$('#loadTableBtn').addEventListener('click', loadTable);
+$('#pasteDataBtn').addEventListener('click', pasteData);
+$('#addRowWithContentBtn').addEventListener('click', addRowWithContent);
+$('#fillEmptyColumnBtn').addEventListener('click', fillEmptyColumn);
+
+
+    </script>
+</body>
+</html>{\rtf1}
